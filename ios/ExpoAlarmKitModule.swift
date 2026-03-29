@@ -375,12 +375,13 @@ public class ExpoAlarmKitModule: Module {
                 alarmSound = .default
             }
             
-            // Choose the appropriate intent based on launchAppOnDismiss
-            // AlarmDismissIntentWithLaunch sets openAppWhenRun=true, AlarmDismissIntent sets it to false
+            // Both stop and snooze buttons use snooze intents so the alarm
+            // always re-fires after snoozeDuration. The only way to truly stop
+            // is calling cancelAlarm() from JS after mission completion.
             let stopIntent: any LiveActivityIntent = launchAppOnDismiss
-                ? AlarmDismissIntentWithLaunch(alarmId: options.id, payload: options.dismissPayload)
-                : AlarmDismissIntent(alarmId: options.id, payload: options.dismissPayload)
-            
+                ? AlarmSnoozeIntentWithLaunch(alarmId: options.id, payload: options.dismissPayload)
+                : AlarmSnoozeIntent(alarmId: options.id, payload: options.dismissPayload)
+
             let secondaryIntent: (any LiveActivityIntent)?
             if doSnoozeIntent {
                 if launchAppOnSnooze {
@@ -391,7 +392,7 @@ public class ExpoAlarmKitModule: Module {
             } else {
                 secondaryIntent = nil
             }
-            
+
             // Create configuration
             let config = AlarmManager.AlarmConfiguration<Meta>(
                 countdownDuration: countdownDuration,
@@ -495,12 +496,13 @@ public class ExpoAlarmKitModule: Module {
                 alarmSound = .default
             }
             
-            // Choose the appropriate intent based on launchAppOnDismiss
-            // AlarmDismissIntentWithLaunch sets openAppWhenRun=true, AlarmDismissIntent sets it to false
+            // Both stop and snooze buttons use snooze intents so the alarm
+            // always re-fires after snoozeDuration. The only way to truly stop
+            // is calling cancelAlarm() from JS after mission completion.
             let stopIntent: any LiveActivityIntent = launchAppOnDismiss
-                ? AlarmDismissIntentWithLaunch(alarmId: options.id, payload: options.dismissPayload)
-                : AlarmDismissIntent(alarmId: options.id, payload: options.dismissPayload)
-            
+                ? AlarmSnoozeIntentWithLaunch(alarmId: options.id, payload: options.dismissPayload)
+                : AlarmSnoozeIntent(alarmId: options.id, payload: options.dismissPayload)
+
             let secondaryIntent: (any LiveActivityIntent)?
             if doSnoozeIntent {
                 if launchAppOnSnooze {
@@ -511,7 +513,7 @@ public class ExpoAlarmKitModule: Module {
             } else {
                 secondaryIntent = nil
             }
-            
+
             // Create configuration with relative schedule
             let config = AlarmManager.AlarmConfiguration<Meta>(
                 countdownDuration: countdownDuration,
