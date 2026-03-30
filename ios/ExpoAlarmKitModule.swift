@@ -10,6 +10,7 @@ private let launchAppKeyPrefix = "ExpoAlarmKit.launchApp:"
 private let alarmConfigKeyPrefix = "ExpoAlarmKit.config:"
 private let missionCompleteKeyPrefix = "ExpoAlarmKit.missionComplete:"
 private let appGroupIdKey = "ExpoAlarmKit.appGroupIdentifier"
+private let debugLogKey = "ExpoAlarmKit.debugLog"
 
 // MARK: - App Group Storage Manager
 @available(iOS 26.0, *)
@@ -116,6 +117,31 @@ public class ExpoAlarmKitStorage {
 
     public static func removeMissionComplete(id: String) {
         sharedDefaults?.removeObject(forKey: missionCompleteKeyPrefix + id)
+    }
+
+    // MARK: - Debug Log (writes to UserDefaults.standard so it ALWAYS works)
+    // We use UserDefaults.standard, NOT App Group — because if App Group is broken,
+    // we still want to see the logs. Both the intent and the main app share the same
+    // UserDefaults.standard when the intent runs in-process.
+
+    public static func appendDebugLog(_ message: String) {
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let entry = "[\(timestamp)] \(message)"
+        var logs = UserDefaults.standard.stringArray(forKey: debugLogKey) ?? []
+        logs.append(entry)
+        // Keep last 50 entries
+        if logs.count > 50 { logs = Array(logs.suffix(50)) }
+        UserDefaults.standard.set(logs, forKey: debugLogKey)
+        UserDefaults.standard.synchronize()
+    }
+
+    public static func getDebugLog() -> [String] {
+        return UserDefaults.standard.stringArray(forKey: debugLogKey) ?? []
+    }
+
+    public static func clearDebugLog() {
+        UserDefaults.standard.removeObject(forKey: debugLogKey)
+        UserDefaults.standard.synchronize()
     }
 }
 
@@ -279,36 +305,38 @@ public struct AlarmRescheduleStopIntent: LiveActivityIntent {
     }
 
     public func perform() async throws -> some IntentResult {
-        print("[ExpoAlarmKit] RescheduleStopIntent.perform() called for alarm \(self.alarmId), base \(self.baseAlarmId)")
+        ExpoAlarmKitStorage.appendDebugLog("perform() START | alarm=\(self.alarmId) base=\(self.baseAlarmId)")
 
         // Ensure App Group is accessible (static var may be nil if process restarted)
         ExpoAlarmKitStorage.ensureAppGroupIdentifier()
+        let appGroup = ExpoAlarmKitStorage.appGroupIdentifier ?? "NIL"
+        let sharedDefaultsOk = ExpoAlarmKitStorage.sharedDefaults != nil
+        ExpoAlarmKitStorage.appendDebugLog("appGroup=\(appGroup) sharedDefaults=\(sharedDefaultsOk)")
 
         // Store payload so JS can read it when app opens
         ExpoAlarmKitModule.launchPayload = buildLaunchPayload(alarmId: self.baseAlarmId, payload: self.payload)
 
         let missionDone = ExpoAlarmKitStorage.isMissionComplete(id: self.baseAlarmId)
-        print("[ExpoAlarmKit] Mission complete: \(missionDone), appGroup: \(ExpoAlarmKitStorage.appGroupIdentifier ?? "NIL")")
+        ExpoAlarmKitStorage.appendDebugLog("missionDone=\(missionDone)")
 
         if missionDone {
-            // Mission complete — clean up, alarm stays dead
             ExpoAlarmKitStorage.removeAlarm(id: self.alarmId)
             ExpoAlarmKitStorage.removeMissionComplete(id: self.baseAlarmId)
             ExpoAlarmKitStorage.removeAlarmConfig(id: self.baseAlarmId)
-            print("[ExpoAlarmKit] Mission complete for \(self.baseAlarmId). Alarm stopped.")
+            ExpoAlarmKitStorage.appendDebugLog("STOPPED — mission complete")
             return .result()
         }
 
         // Mission NOT complete — reschedule a new alarm
         guard let config = ExpoAlarmKitStorage.getAlarmConfig(id: self.baseAlarmId) else {
-            print("[ExpoAlarmKit] No stored config for \(self.baseAlarmId). Cannot reschedule. sharedDefaults nil: \(ExpoAlarmKitStorage.sharedDefaults == nil)")
+            ExpoAlarmKitStorage.appendDebugLog("FAILED — no config found for base=\(self.baseAlarmId)")
             return .result()
         }
-        print("[ExpoAlarmKit] Config found, keys: \(config.keys.joined(separator: ", "))")
 
         let rescheduleDelay = config["rescheduleDelay"] as? Int ?? 30
         let newId = UUID()
         let fireDate = Date().addingTimeInterval(TimeInterval(rescheduleDelay))
+        ExpoAlarmKitStorage.appendDebugLog("scheduling newId=\(newId) fireIn=\(rescheduleDelay)s")
 
         do {
             try await Self.scheduleRescheduleAlarm(
@@ -317,11 +345,10 @@ public struct AlarmRescheduleStopIntent: LiveActivityIntent {
                 fireDate: fireDate,
                 config: config
             )
-            // Track the new alarm in storage
             ExpoAlarmKitStorage.setAlarm(id: newId.uuidString, value: fireDate.timeIntervalSince1970)
-            print("[ExpoAlarmKit] Rescheduled alarm \(newId) firing at \(fireDate) (\(rescheduleDelay)s) for base \(self.baseAlarmId)")
+            ExpoAlarmKitStorage.appendDebugLog("SUCCESS — rescheduled \(newId) at \(fireDate)")
         } catch {
-            print("[ExpoAlarmKit] Failed to reschedule alarm: \(error.localizedDescription) | \(error)")
+            ExpoAlarmKitStorage.appendDebugLog("FAILED — schedule error: \(error.localizedDescription)")
         }
 
         return .result()
@@ -871,6 +898,15 @@ public class ExpoAlarmKitModule: Module {
         Function("clearMissionComplete") { (alarmId: String) in
             ExpoAlarmKitStorage.removeMissionComplete(id: alarmId)
             print("[ExpoAlarmKit] Mission complete flag cleared for \(alarmId)")
+        }
+
+        // MARK: - Debug Log
+        Function("getDebugLog") { () -> [String] in
+            return ExpoAlarmKitStorage.getDebugLog()
+        }
+
+        Function("clearDebugLog") { () in
+            ExpoAlarmKitStorage.clearDebugLog()
         }
 
         // MARK: - Get Launch Payload

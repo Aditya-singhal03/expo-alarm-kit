@@ -214,6 +214,19 @@ export function clearMissionComplete(alarmId: string): void {
 }
 
 /**
+ * Get debug log from the native intent. The intent writes to UserDefaults
+ * since print() doesn't show in Xcode console for LiveActivityIntents.
+ * Call this from JS after testing to see what the intent did.
+ */
+export function getDebugLog(): string[] {
+  return ExpoAlarmKitModule.getDebugLog();
+}
+
+export function clearDebugLog(): void {
+  ExpoAlarmKitModule.clearDebugLog();
+}
+
+/**
  * Get the launch payload if the app was opened from an alarm dismiss/snooze intent.
  * The payload contains the alarmId and payload string (or null if not provided).
  * Note: The payload is cleared after retrieval, so subsequent calls will return null.
@@ -236,6 +249,8 @@ const ExpoAlarmKit = {
   removeAlarm,
   setMissionComplete,
   clearMissionComplete,
+  getDebugLog,
+  clearDebugLog,
   getLaunchPayload,
 };
 

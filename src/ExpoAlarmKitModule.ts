@@ -121,6 +121,9 @@ interface ExpoAlarmKitModuleType {
    */
   clearMissionComplete(alarmId: string): void;
 
+  getDebugLog(): string[];
+  clearDebugLog(): void;
+
   /**
    * Get the launch payload if the app was opened from an alarm dismiss/snooze intent.
    * The payload is cleared after retrieval.
