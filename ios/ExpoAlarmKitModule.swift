@@ -143,6 +143,32 @@ public class ExpoAlarmKitStorage {
         UserDefaults.standard.removeObject(forKey: debugLogKey)
         UserDefaults.standard.synchronize()
     }
+
+    // MARK: - Persistent Launch Payload
+    // When openAppWhenRun=false, the app may not be active so the static var
+    // ExpoAlarmKitModule.launchPayload could be lost. Store in UserDefaults.standard
+    // so JS can read it when the app eventually opens.
+    private static let pendingPayloadKey = "ExpoAlarmKit.pendingPayload"
+
+    public static func setPendingPayload(_ payload: [String: Any]) {
+        if let data = try? JSONSerialization.data(withJSONObject: payload) {
+            UserDefaults.standard.set(data, forKey: pendingPayloadKey)
+            UserDefaults.standard.synchronize()
+        }
+    }
+
+    public static func getPendingPayload() -> [String: Any]? {
+        guard let data = UserDefaults.standard.data(forKey: pendingPayloadKey),
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return dict
+    }
+
+    public static func clearPendingPayload() {
+        UserDefaults.standard.removeObject(forKey: pendingPayloadKey)
+        UserDefaults.standard.synchronize()
+    }
 }
 
 // MARK: - Record Structs for Expo Module
@@ -285,7 +311,7 @@ public struct AlarmDismissIntentWithLaunch: LiveActivityIntent {
 public struct AlarmRescheduleStopIntent: LiveActivityIntent {
     public static var title: LocalizedStringResource = "Stop Alarm"
     public static var description = IntentDescription("Checks mission and reschedules alarm if not complete")
-    public static var openAppWhenRun: Bool = true
+    public static var openAppWhenRun: Bool = false
 
     @Parameter(title: "alarmId")
     public var alarmId: String
@@ -314,7 +340,10 @@ public struct AlarmRescheduleStopIntent: LiveActivityIntent {
         ExpoAlarmKitStorage.appendDebugLog("appGroup=\(appGroup) sharedDefaults=\(sharedDefaultsOk)")
 
         // Store payload so JS can read it when app opens
-        ExpoAlarmKitModule.launchPayload = buildLaunchPayload(alarmId: self.baseAlarmId, payload: self.payload)
+        // Write to both: static var (for when app is active) and UserDefaults (for when it's not)
+        let payloadDict = buildLaunchPayload(alarmId: self.baseAlarmId, payload: self.payload)
+        ExpoAlarmKitModule.launchPayload = payloadDict
+        ExpoAlarmKitStorage.setPendingPayload(payloadDict)
 
         let missionDone = ExpoAlarmKitStorage.isMissionComplete(id: self.baseAlarmId)
         ExpoAlarmKitStorage.appendDebugLog("missionDone=\(missionDone)")
@@ -911,9 +940,12 @@ public class ExpoAlarmKitModule: Module {
 
         // MARK: - Get Launch Payload
         Function("getLaunchPayload") { () -> [String: Any]? in
-            let payload = ExpoAlarmKitModule.launchPayload
-            // Clear after retrieval
+            // Check static var first (set when app was active during intent)
+            // Fall back to UserDefaults (set when app was inactive/locked)
+            let payload = ExpoAlarmKitModule.launchPayload ?? ExpoAlarmKitStorage.getPendingPayload()
+            // Clear both after retrieval
             ExpoAlarmKitModule.launchPayload = nil
+            ExpoAlarmKitStorage.clearPendingPayload()
             return payload
         }
     }
