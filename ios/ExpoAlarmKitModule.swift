@@ -169,6 +169,23 @@ public class ExpoAlarmKitStorage {
         UserDefaults.standard.removeObject(forKey: pendingPayloadKey)
         UserDefaults.standard.synchronize()
     }
+
+    // MARK: - Pending Reschedule Tracking
+    // Stores the UUID of the latest rescheduled alarm so we can cancel it
+    // when the mission is completed (before it fires).
+    private static let pendingReschedulePrefix = "ExpoAlarmKit.pendingReschedule:"
+
+    public static func setPendingRescheduleId(baseAlarmId: String, rescheduleId: String) {
+        sharedDefaults?.set(rescheduleId, forKey: pendingReschedulePrefix + baseAlarmId)
+    }
+
+    public static func getPendingRescheduleId(baseAlarmId: String) -> String? {
+        return sharedDefaults?.string(forKey: pendingReschedulePrefix + baseAlarmId)
+    }
+
+    public static func removePendingRescheduleId(baseAlarmId: String) {
+        sharedDefaults?.removeObject(forKey: pendingReschedulePrefix + baseAlarmId)
+    }
 }
 
 // MARK: - Record Structs for Expo Module
@@ -352,6 +369,7 @@ public struct AlarmRescheduleStopIntent: LiveActivityIntent {
             ExpoAlarmKitStorage.removeAlarm(id: self.alarmId)
             ExpoAlarmKitStorage.removeMissionComplete(id: self.baseAlarmId)
             ExpoAlarmKitStorage.removeAlarmConfig(id: self.baseAlarmId)
+            ExpoAlarmKitStorage.removePendingRescheduleId(baseAlarmId: self.baseAlarmId)
             ExpoAlarmKitStorage.appendDebugLog("STOPPED — mission complete")
             return .result()
         }
@@ -375,6 +393,7 @@ public struct AlarmRescheduleStopIntent: LiveActivityIntent {
                 config: config
             )
             ExpoAlarmKitStorage.setAlarm(id: newId.uuidString, value: fireDate.timeIntervalSince1970)
+            ExpoAlarmKitStorage.setPendingRescheduleId(baseAlarmId: self.baseAlarmId, rescheduleId: newId.uuidString)
             ExpoAlarmKitStorage.appendDebugLog("SUCCESS — rescheduled \(newId) at \(fireDate)")
         } catch {
             ExpoAlarmKitStorage.appendDebugLog("FAILED — schedule error: \(error.localizedDescription)")
@@ -921,7 +940,14 @@ public class ExpoAlarmKitModule: Module {
         // MARK: - Mission Complete Flag
         Function("setMissionComplete") { (alarmId: String) in
             ExpoAlarmKitStorage.setMissionComplete(id: alarmId, value: true)
-            print("[ExpoAlarmKit] Mission marked complete for \(alarmId)")
+
+            // Cancel the pending rescheduled alarm so it doesn't ring one extra time
+            if let pendingId = ExpoAlarmKitStorage.getPendingRescheduleId(baseAlarmId: alarmId),
+               let pendingUUID = UUID(uuidString: pendingId) {
+                try? AlarmManager.shared.cancel(id: pendingUUID)
+                ExpoAlarmKitStorage.removeAlarm(id: pendingId)
+                ExpoAlarmKitStorage.removePendingRescheduleId(baseAlarmId: alarmId)
+            }
         }
 
         Function("clearMissionComplete") { (alarmId: String) in
