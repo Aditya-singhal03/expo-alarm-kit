@@ -57,7 +57,7 @@ export interface ScheduleAlarmOptions {
   title: string;
   /** Optional custom sound name (must exist in app bundle) */
   soundName?: string;
-  /** Whether to launch the app when the alarm stop button is pressed. Defaults to false. */
+  /** Whether to launch the app when the alarm stop button is pressed. Defaults to false. Ignored when rescheduleOnStop is true. */
   launchAppOnDismiss?: boolean;
   /** Whether to run a custom snooze intent when the snooze button is pressed. Defaults to false. */
   doSnoozeIntent?: boolean;
@@ -79,6 +79,10 @@ export interface ScheduleAlarmOptions {
   tintColor?: string;
   /** Snooze duration in seconds (default: 540 = 9 minutes) */
   snoozeDuration?: number;
+  /** When true, tapping Stop schedules a new alarm natively (works on lock screen). Call setMissionComplete() to break the loop. */
+  rescheduleOnStop?: boolean;
+  /** Delay in seconds before the re-ring alarm fires (default: 30). Only used when rescheduleOnStop is true. */
+  rescheduleDelay?: number;
 }
 
 /**
@@ -122,7 +126,7 @@ export interface ScheduleRepeatingAlarmOptions {
   title: string;
   /** Optional custom sound name (must exist in app bundle) */
   soundName?: string;
-  /** Whether to launch the app when the alarm stop button is pressed. Defaults to false. */
+  /** Whether to launch the app when the alarm stop button is pressed. Defaults to false. Ignored when rescheduleOnStop is true. */
   launchAppOnDismiss?: boolean;
   /** Whether to run a custom snooze intent when the snooze button is pressed. Defaults to false. */
   doSnoozeIntent?: boolean;
@@ -144,6 +148,10 @@ export interface ScheduleRepeatingAlarmOptions {
   tintColor?: string;
   /** Snooze duration in seconds (default: 540 = 9 minutes) */
   snoozeDuration?: number;
+  /** When true, tapping Stop schedules a new alarm natively (works on lock screen). Call setMissionComplete() to break the loop. */
+  rescheduleOnStop?: boolean;
+  /** Delay in seconds before the re-ring alarm fires (default: 30). Only used when rescheduleOnStop is true. */
+  rescheduleDelay?: number;
 }
 
 /**
@@ -187,6 +195,25 @@ export function removeAlarm(id: string): void {
 }
 
 /**
+ * Mark a mission as complete so the native reschedule-on-stop loop ends.
+ * Call this when the user finishes their mission. The next time the stop intent
+ * fires, it will NOT reschedule — the alarm stays dead.
+ * @param alarmId - The base alarm ID (the original alarm's ID passed to schedule).
+ */
+export function setMissionComplete(alarmId: string): void {
+  ExpoAlarmKitModule.setMissionComplete(alarmId);
+}
+
+/**
+ * Clear the mission-complete flag. Call this when scheduling a new alarm
+ * to ensure the reschedule loop is active for the next alarm instance.
+ * @param alarmId - The base alarm ID.
+ */
+export function clearMissionComplete(alarmId: string): void {
+  ExpoAlarmKitModule.clearMissionComplete(alarmId);
+}
+
+/**
  * Get the launch payload if the app was opened from an alarm dismiss/snooze intent.
  * The payload contains the alarmId and payload string (or null if not provided).
  * Note: The payload is cleared after retrieval, so subsequent calls will return null.
@@ -207,6 +234,8 @@ const ExpoAlarmKit = {
   getAllAlarms,
   clearAllAlarms,
   removeAlarm,
+  setMissionComplete,
+  clearMissionComplete,
   getLaunchPayload,
 };
 

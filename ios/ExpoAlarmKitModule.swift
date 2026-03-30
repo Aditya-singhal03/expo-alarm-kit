@@ -7,6 +7,8 @@ import SwiftUI
 // MARK: - Storage Keys
 private let alarmKeyPrefix = "ExpoAlarmKit.alarm:"
 private let launchAppKeyPrefix = "ExpoAlarmKit.launchApp:"
+private let alarmConfigKeyPrefix = "ExpoAlarmKit.config:"
+private let missionCompleteKeyPrefix = "ExpoAlarmKit.missionComplete:"
 
 // MARK: - App Group Storage Manager
 @available(iOS 26.0, *)
@@ -61,6 +63,40 @@ public class ExpoAlarmKitStorage {
     public static func removeLaunchAppOnDismiss(alarmId: String) {
         sharedDefaults?.removeObject(forKey: launchAppKeyPrefix + alarmId)
     }
+
+    // MARK: - Alarm Config Storage (for reschedule-on-stop)
+
+    public static func setAlarmConfig(id: String, config: [String: Any]) {
+        if let data = try? JSONSerialization.data(withJSONObject: config) {
+            sharedDefaults?.set(data, forKey: alarmConfigKeyPrefix + id)
+        }
+    }
+
+    public static func getAlarmConfig(id: String) -> [String: Any]? {
+        guard let data = sharedDefaults?.data(forKey: alarmConfigKeyPrefix + id),
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return dict
+    }
+
+    public static func removeAlarmConfig(id: String) {
+        sharedDefaults?.removeObject(forKey: alarmConfigKeyPrefix + id)
+    }
+
+    // MARK: - Mission Complete Flag
+
+    public static func setMissionComplete(id: String, value: Bool) {
+        sharedDefaults?.set(value, forKey: missionCompleteKeyPrefix + id)
+    }
+
+    public static func isMissionComplete(id: String) -> Bool {
+        return sharedDefaults?.bool(forKey: missionCompleteKeyPrefix + id) ?? false
+    }
+
+    public static func removeMissionComplete(id: String) {
+        sharedDefaults?.removeObject(forKey: missionCompleteKeyPrefix + id)
+    }
 }
 
 // MARK: - Record Structs for Expo Module
@@ -81,6 +117,8 @@ struct ScheduleAlarmOptions: Record {
     @Field var snoozeButtonColor: String?
     @Field var tintColor: String?
     @Field var snoozeDuration: Int?
+    @Field var rescheduleOnStop: Bool?
+    @Field var rescheduleDelay: Int?
 }
 
 @available(iOS 26.0, *)
@@ -102,6 +140,8 @@ struct ScheduleRepeatingAlarmOptions: Record {
     @Field var snoozeButtonColor: String?
     @Field var tintColor: String?
     @Field var snoozeDuration: Int?
+    @Field var rescheduleOnStop: Bool?
+    @Field var rescheduleDelay: Int?
 }
 
 // MARK: - Helper Functions
@@ -132,28 +172,28 @@ public struct AlarmDismissIntent: LiveActivityIntent {
     public static var title: LocalizedStringResource = "Dismiss Alarm"
     public static var description = IntentDescription("Handles alarm dismissal")
     public static var openAppWhenRun: Bool = false
-    
+
     @Parameter(title: "alarmId")
     public var alarmId: String
-    
+
     @Parameter(title: "payload")
     public var payload: String?
-    
+
     public init() {}
-    
+
     public init(alarmId: String, payload: String? = nil) {
         self.alarmId = alarmId
         self.payload = payload
     }
-    
+
     public func perform() async throws -> some IntentResult {
         // Store payload for JS to retrieve
         ExpoAlarmKitModule.launchPayload = buildLaunchPayload(alarmId: self.alarmId, payload: self.payload)
-        
+
         // Clean up App Group storage
         ExpoAlarmKitStorage.removeAlarm(id: self.alarmId)
         ExpoAlarmKitStorage.removeLaunchAppOnDismiss(alarmId: self.alarmId)
-        
+
         return .result()
     }
 }
@@ -164,29 +204,186 @@ public struct AlarmDismissIntentWithLaunch: LiveActivityIntent {
     public static var title: LocalizedStringResource = "Dismiss Alarm"
     public static var description = IntentDescription("Handles alarm dismissal and opens app")
     public static var openAppWhenRun: Bool = true
-    
+
     @Parameter(title: "alarmId")
     public var alarmId: String
-    
+
     @Parameter(title: "payload")
     public var payload: String?
-    
+
     public init() {}
-    
+
     public init(alarmId: String, payload: String? = nil) {
         self.alarmId = alarmId
         self.payload = payload
     }
-    
+
     public func perform() async throws -> some IntentResult {
         // Store payload for JS to retrieve
         ExpoAlarmKitModule.launchPayload = buildLaunchPayload(alarmId: self.alarmId, payload: self.payload)
-        
+
         // Clean up App Group storage
         ExpoAlarmKitStorage.removeAlarm(id: self.alarmId)
         ExpoAlarmKitStorage.removeLaunchAppOnDismiss(alarmId: self.alarmId)
-        
+
         return .result()
+    }
+}
+
+// MARK: - Reschedule Stop Intent (re-rings alarm until mission complete)
+// This is the KEY intent: runs natively on lock screen without JS bridge.
+// When user taps Stop, it checks if mission is done. If not, schedules a
+// new alarm to fire in rescheduleDelay seconds — creating an infinite loop
+// until the mission-complete flag is set from JS.
+@available(iOS 26.0, *)
+public struct AlarmRescheduleStopIntent: LiveActivityIntent {
+    public static var title: LocalizedStringResource = "Stop Alarm"
+    public static var description = IntentDescription("Checks mission and reschedules alarm if not complete")
+    public static var openAppWhenRun: Bool = true
+
+    @Parameter(title: "alarmId")
+    public var alarmId: String
+
+    @Parameter(title: "baseAlarmId")
+    public var baseAlarmId: String
+
+    @Parameter(title: "payload")
+    public var payload: String?
+
+    public init() {}
+
+    public init(alarmId: String, baseAlarmId: String, payload: String? = nil) {
+        self.alarmId = alarmId
+        self.baseAlarmId = baseAlarmId
+        self.payload = payload
+    }
+
+    public func perform() async throws -> some IntentResult {
+        // Store payload so JS can read it when app opens
+        ExpoAlarmKitModule.launchPayload = buildLaunchPayload(alarmId: self.baseAlarmId, payload: self.payload)
+
+        let missionDone = ExpoAlarmKitStorage.isMissionComplete(id: self.baseAlarmId)
+
+        if missionDone {
+            // Mission complete — clean up, alarm stays dead
+            ExpoAlarmKitStorage.removeAlarm(id: self.alarmId)
+            ExpoAlarmKitStorage.removeMissionComplete(id: self.baseAlarmId)
+            ExpoAlarmKitStorage.removeAlarmConfig(id: self.baseAlarmId)
+            print("[ExpoAlarmKit] Mission complete for \(self.baseAlarmId). Alarm stopped.")
+            return .result()
+        }
+
+        // Mission NOT complete — reschedule a new alarm
+        guard let config = ExpoAlarmKitStorage.getAlarmConfig(id: self.baseAlarmId) else {
+            print("[ExpoAlarmKit] No stored config for \(self.baseAlarmId). Cannot reschedule.")
+            return .result()
+        }
+
+        let rescheduleDelay = config["rescheduleDelay"] as? Int ?? 30
+        let newId = UUID()
+        let fireDate = Date().addingTimeInterval(TimeInterval(rescheduleDelay))
+
+        do {
+            try await Self.scheduleRescheduleAlarm(
+                id: newId,
+                baseAlarmId: self.baseAlarmId,
+                fireDate: fireDate,
+                config: config
+            )
+            // Track the new alarm in storage
+            ExpoAlarmKitStorage.setAlarm(id: newId.uuidString, value: fireDate.timeIntervalSince1970)
+            print("[ExpoAlarmKit] Rescheduled alarm \(newId) in \(rescheduleDelay)s for base \(self.baseAlarmId)")
+        } catch {
+            print("[ExpoAlarmKit] Failed to reschedule alarm: \(error)")
+        }
+
+        return .result()
+    }
+
+    // Builds and schedules a new one-shot alarm using stored config
+    static func scheduleRescheduleAlarm(
+        id: UUID,
+        baseAlarmId: String,
+        fireDate: Date,
+        config: [String: Any]
+    ) async throws {
+        struct Meta: AlarmMetadata {}
+
+        let title = config["title"] as? String ?? "Alarm"
+        let soundName = config["soundName"] as? String
+        let tintColorHex = config["tintColor"] as? String
+        let stopLabel = config["stopButtonLabel"] as? String ?? "Stop"
+        let snoozeLabel = config["snoozeButtonLabel"] as? String ?? "Snooze"
+        let stopColorHex = config["stopButtonColor"] as? String
+        let snoozeColorHex = config["snoozeButtonColor"] as? String
+        let snoozeDuration = config["snoozeDuration"] as? Int ?? (9 * 60)
+        let dismissPayload = config["dismissPayload"] as? String
+        let snoozePayload = config["snoozePayload"] as? String
+        let launchAppOnSnooze = config["launchAppOnSnooze"] as? Bool ?? false
+
+        let stopColor = stopColorHex != nil ? colorFromHex(stopColorHex!) : Color.white
+        let snoozeColor = snoozeColorHex != nil ? colorFromHex(snoozeColorHex!) : Color.white
+        let alarmTintColor = tintColorHex != nil ? colorFromHex(tintColorHex!) : Color.blue
+
+        let stopButton = AlarmButton(
+            text: LocalizedStringResource(stringLiteral: stopLabel),
+            textColor: stopColor,
+            systemImageName: "stop.circle"
+        )
+        let snoozeButton = AlarmButton(
+            text: LocalizedStringResource(stringLiteral: snoozeLabel),
+            textColor: snoozeColor,
+            systemImageName: "clock.badge.checkmark"
+        )
+
+        let alertPresentation = AlarmPresentation.Alert(
+            title: LocalizedStringResource(stringLiteral: title),
+            stopButton: stopButton,
+            secondaryButton: snoozeButton,
+            secondaryButtonBehavior: .countdown
+        )
+        let presentation = AlarmPresentation(alert: alertPresentation)
+
+        let countdownDuration = Alarm.CountdownDuration(
+            preAlert: nil,
+            postAlert: TimeInterval(snoozeDuration)
+        )
+
+        let attributes = AlarmAttributes<Meta>(
+            presentation: presentation,
+            metadata: Meta(),
+            tintColor: alarmTintColor
+        )
+
+        let alarmSound: AlertConfiguration.AlertSound
+        if let sn = soundName, !sn.isEmpty {
+            alarmSound = .named(sn)
+        } else {
+            alarmSound = .default
+        }
+
+        // Stop intent: another RescheduleStopIntent (keeps the loop going)
+        let stopIntent = AlarmRescheduleStopIntent(
+            alarmId: id.uuidString,
+            baseAlarmId: baseAlarmId,
+            payload: dismissPayload
+        )
+
+        // Snooze intent
+        let secondaryIntent: (any LiveActivityIntent)? = launchAppOnSnooze
+            ? AlarmSnoozeIntentWithLaunch(alarmId: id.uuidString, payload: snoozePayload)
+            : AlarmSnoozeIntent(alarmId: id.uuidString, payload: snoozePayload)
+
+        let alarmConfig = AlarmManager.AlarmConfiguration<Meta>(
+            countdownDuration: countdownDuration,
+            schedule: .fixed(fireDate),
+            attributes: attributes,
+            stopIntent: stopIntent,
+            secondaryIntent: secondaryIntent,
+            sound: alarmSound
+        )
+
+        try await AlarmManager.shared.schedule(id: id, configuration: alarmConfig)
     }
 }
 
@@ -375,12 +572,22 @@ public class ExpoAlarmKitModule: Module {
                 alarmSound = .default
             }
             
-            // Both stop and snooze buttons use snooze intents so the alarm
-            // always re-fires after snoozeDuration. The only way to truly stop
-            // is calling cancelAlarm() from JS after mission completion.
-            let stopIntent: any LiveActivityIntent = launchAppOnDismiss
-                ? AlarmSnoozeIntentWithLaunch(alarmId: options.id, payload: options.dismissPayload)
-                : AlarmSnoozeIntent(alarmId: options.id, payload: options.dismissPayload)
+            let rescheduleOnStop = options.rescheduleOnStop ?? false
+
+            // Choose stop intent based on rescheduleOnStop mode
+            let stopIntent: any LiveActivityIntent
+            if rescheduleOnStop {
+                // Native reschedule: alarm re-rings until mission complete flag is set
+                stopIntent = AlarmRescheduleStopIntent(
+                    alarmId: options.id,
+                    baseAlarmId: options.id,
+                    payload: options.dismissPayload
+                )
+            } else if launchAppOnDismiss {
+                stopIntent = AlarmDismissIntentWithLaunch(alarmId: options.id, payload: options.dismissPayload)
+            } else {
+                stopIntent = AlarmDismissIntent(alarmId: options.id, payload: options.dismissPayload)
+            }
 
             let secondaryIntent: (any LiveActivityIntent)?
             if doSnoozeIntent {
@@ -402,11 +609,31 @@ public class ExpoAlarmKitModule: Module {
                 secondaryIntent: secondaryIntent,
                 sound: alarmSound
             )
-            
+
             do {
                 try await AlarmManager.shared.schedule(id: uuid, configuration: config)
                 // Store alarm metadata in App Group
                 ExpoAlarmKitStorage.setAlarm(id: options.id, value: options.epochSeconds)
+
+                // If rescheduleOnStop, store config so the intent can rebuild the alarm
+                if rescheduleOnStop {
+                    let storedConfig: [String: Any] = [
+                        "title": options.title,
+                        "soundName": options.soundName ?? "",
+                        "tintColor": options.tintColor ?? "",
+                        "stopButtonLabel": options.stopButtonLabel ?? "Stop",
+                        "snoozeButtonLabel": options.snoozeButtonLabel ?? "Snooze",
+                        "stopButtonColor": options.stopButtonColor ?? "",
+                        "snoozeButtonColor": options.snoozeButtonColor ?? "",
+                        "snoozeDuration": options.snoozeDuration ?? (9 * 60),
+                        "dismissPayload": options.dismissPayload ?? "",
+                        "snoozePayload": options.snoozePayload ?? "",
+                        "launchAppOnSnooze": launchAppOnSnooze,
+                        "rescheduleDelay": options.rescheduleDelay ?? 30,
+                    ]
+                    ExpoAlarmKitStorage.setAlarmConfig(id: options.id, config: storedConfig)
+                }
+
                 return true
             } catch {
                 print("[ExpoAlarmKit] Failed to schedule alarm: \(error)")
@@ -496,12 +723,21 @@ public class ExpoAlarmKitModule: Module {
                 alarmSound = .default
             }
             
-            // Both stop and snooze buttons use snooze intents so the alarm
-            // always re-fires after snoozeDuration. The only way to truly stop
-            // is calling cancelAlarm() from JS after mission completion.
-            let stopIntent: any LiveActivityIntent = launchAppOnDismiss
-                ? AlarmSnoozeIntentWithLaunch(alarmId: options.id, payload: options.dismissPayload)
-                : AlarmSnoozeIntent(alarmId: options.id, payload: options.dismissPayload)
+            let rescheduleOnStop = options.rescheduleOnStop ?? false
+
+            // Choose stop intent based on rescheduleOnStop mode
+            let stopIntent: any LiveActivityIntent
+            if rescheduleOnStop {
+                stopIntent = AlarmRescheduleStopIntent(
+                    alarmId: options.id,
+                    baseAlarmId: options.id,
+                    payload: options.dismissPayload
+                )
+            } else if launchAppOnDismiss {
+                stopIntent = AlarmDismissIntentWithLaunch(alarmId: options.id, payload: options.dismissPayload)
+            } else {
+                stopIntent = AlarmDismissIntent(alarmId: options.id, payload: options.dismissPayload)
+            }
 
             let secondaryIntent: (any LiveActivityIntent)?
             if doSnoozeIntent {
@@ -523,11 +759,31 @@ public class ExpoAlarmKitModule: Module {
                 secondaryIntent: secondaryIntent,
                 sound: alarmSound
             )
-            
+
             do {
                 try await AlarmManager.shared.schedule(id: uuid, configuration: config)
                 // Store alarm metadata in App Group (store -1 for repeating to indicate repeating type)
                 ExpoAlarmKitStorage.setAlarm(id: options.id, value: -1)
+
+                // If rescheduleOnStop, store config so the intent can rebuild the alarm
+                if rescheduleOnStop {
+                    let storedConfig: [String: Any] = [
+                        "title": options.title,
+                        "soundName": options.soundName ?? "",
+                        "tintColor": options.tintColor ?? "",
+                        "stopButtonLabel": options.stopButtonLabel ?? "Stop",
+                        "snoozeButtonLabel": options.snoozeButtonLabel ?? "Snooze",
+                        "stopButtonColor": options.stopButtonColor ?? "",
+                        "snoozeButtonColor": options.snoozeButtonColor ?? "",
+                        "snoozeDuration": options.snoozeDuration ?? (9 * 60),
+                        "dismissPayload": options.dismissPayload ?? "",
+                        "snoozePayload": options.snoozePayload ?? "",
+                        "launchAppOnSnooze": launchAppOnSnooze,
+                        "rescheduleDelay": options.rescheduleDelay ?? 30,
+                    ]
+                    ExpoAlarmKitStorage.setAlarmConfig(id: options.id, config: storedConfig)
+                }
+
                 return true
             } catch {
                 print("[ExpoAlarmKit] Failed to schedule repeating alarm: \(error)")
@@ -547,6 +803,8 @@ public class ExpoAlarmKitModule: Module {
                 // Clean up App Group storage
                 ExpoAlarmKitStorage.removeAlarm(id: id)
                 ExpoAlarmKitStorage.removeLaunchAppOnDismiss(alarmId: id)
+                ExpoAlarmKitStorage.removeAlarmConfig(id: id)
+                ExpoAlarmKitStorage.removeMissionComplete(id: id)
                 return true
             } catch {
                 print("[ExpoAlarmKit] Failed to cancel alarm: \(error)")
@@ -571,6 +829,17 @@ public class ExpoAlarmKitModule: Module {
             ExpoAlarmKitStorage.clearAllAlarms()
         }
         
+        // MARK: - Mission Complete Flag
+        Function("setMissionComplete") { (alarmId: String) in
+            ExpoAlarmKitStorage.setMissionComplete(id: alarmId, value: true)
+            print("[ExpoAlarmKit] Mission marked complete for \(alarmId)")
+        }
+
+        Function("clearMissionComplete") { (alarmId: String) in
+            ExpoAlarmKitStorage.removeMissionComplete(id: alarmId)
+            print("[ExpoAlarmKit] Mission complete flag cleared for \(alarmId)")
+        }
+
         // MARK: - Get Launch Payload
         Function("getLaunchPayload") { () -> [String: Any]? in
             let payload = ExpoAlarmKitModule.launchPayload

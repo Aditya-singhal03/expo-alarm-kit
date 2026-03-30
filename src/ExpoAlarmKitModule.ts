@@ -23,6 +23,8 @@ export interface ScheduleAlarmOptions {
   snoozeButtonColor?: string | null;
   tintColor?: string | null;
   snoozeDuration?: number | null;
+  rescheduleOnStop?: boolean;
+  rescheduleDelay?: number | null;
 }
 
 export interface ScheduleRepeatingAlarmOptions {
@@ -43,6 +45,8 @@ export interface ScheduleRepeatingAlarmOptions {
   snoozeButtonColor?: string | null;
   tintColor?: string | null;
   snoozeDuration?: number | null;
+  rescheduleOnStop?: boolean;
+  rescheduleDelay?: number | null;
 }
 
 interface ExpoAlarmKitModuleType {
@@ -104,6 +108,18 @@ interface ExpoAlarmKitModuleType {
    * This resets the list of alarm IDs stored in UserDefaults.
    */
   clearAllAlarms(): void;
+
+  /**
+   * Mark a mission as complete so the native reschedule-on-stop intent stops re-ringing.
+   * @param alarmId - The base alarm ID (the original repeating alarm's ID).
+   */
+  setMissionComplete(alarmId: string): void;
+
+  /**
+   * Clear the mission-complete flag for an alarm.
+   * @param alarmId - The base alarm ID.
+   */
+  clearMissionComplete(alarmId: string): void;
 
   /**
    * Get the launch payload if the app was opened from an alarm dismiss/snooze intent.
