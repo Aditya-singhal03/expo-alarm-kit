@@ -9,13 +9,33 @@ private let alarmKeyPrefix = "ExpoAlarmKit.alarm:"
 private let launchAppKeyPrefix = "ExpoAlarmKit.launchApp:"
 private let alarmConfigKeyPrefix = "ExpoAlarmKit.config:"
 private let missionCompleteKeyPrefix = "ExpoAlarmKit.missionComplete:"
+private let appGroupIdKey = "ExpoAlarmKit.appGroupIdentifier"
 
 // MARK: - App Group Storage Manager
 @available(iOS 26.0, *)
 public class ExpoAlarmKitStorage {
     public static var appGroupIdentifier: String? = nil
-    
+
+    /// Ensures appGroupIdentifier is available, restoring from UserDefaults.standard if needed.
+    /// This is critical for LiveActivityIntents which may run when the static var is not set.
+    public static func ensureAppGroupIdentifier() {
+        if appGroupIdentifier == nil {
+            appGroupIdentifier = UserDefaults.standard.string(forKey: appGroupIdKey)
+            if appGroupIdentifier != nil {
+                print("[ExpoAlarmKit] Restored App Group ID from UserDefaults.standard: \(appGroupIdentifier!)")
+            }
+        }
+    }
+
+    /// Persists the app group ID to UserDefaults.standard so intents can recover it.
+    public static func persistAppGroupIdentifier(_ identifier: String) {
+        appGroupIdentifier = identifier
+        UserDefaults.standard.set(identifier, forKey: appGroupIdKey)
+        UserDefaults.standard.synchronize()
+    }
+
     public static var sharedDefaults: UserDefaults? {
+        ensureAppGroupIdentifier()
         guard let groupId = appGroupIdentifier else {
             print("[ExpoAlarmKit] Warning: App Group not configured. Call configure() first.")
             return nil
@@ -259,10 +279,16 @@ public struct AlarmRescheduleStopIntent: LiveActivityIntent {
     }
 
     public func perform() async throws -> some IntentResult {
+        print("[ExpoAlarmKit] RescheduleStopIntent.perform() called for alarm \(self.alarmId), base \(self.baseAlarmId)")
+
+        // Ensure App Group is accessible (static var may be nil if process restarted)
+        ExpoAlarmKitStorage.ensureAppGroupIdentifier()
+
         // Store payload so JS can read it when app opens
         ExpoAlarmKitModule.launchPayload = buildLaunchPayload(alarmId: self.baseAlarmId, payload: self.payload)
 
         let missionDone = ExpoAlarmKitStorage.isMissionComplete(id: self.baseAlarmId)
+        print("[ExpoAlarmKit] Mission complete: \(missionDone), appGroup: \(ExpoAlarmKitStorage.appGroupIdentifier ?? "NIL")")
 
         if missionDone {
             // Mission complete — clean up, alarm stays dead
@@ -275,9 +301,10 @@ public struct AlarmRescheduleStopIntent: LiveActivityIntent {
 
         // Mission NOT complete — reschedule a new alarm
         guard let config = ExpoAlarmKitStorage.getAlarmConfig(id: self.baseAlarmId) else {
-            print("[ExpoAlarmKit] No stored config for \(self.baseAlarmId). Cannot reschedule.")
+            print("[ExpoAlarmKit] No stored config for \(self.baseAlarmId). Cannot reschedule. sharedDefaults nil: \(ExpoAlarmKitStorage.sharedDefaults == nil)")
             return .result()
         }
+        print("[ExpoAlarmKit] Config found, keys: \(config.keys.joined(separator: ", "))")
 
         let rescheduleDelay = config["rescheduleDelay"] as? Int ?? 30
         let newId = UUID()
@@ -292,9 +319,9 @@ public struct AlarmRescheduleStopIntent: LiveActivityIntent {
             )
             // Track the new alarm in storage
             ExpoAlarmKitStorage.setAlarm(id: newId.uuidString, value: fireDate.timeIntervalSince1970)
-            print("[ExpoAlarmKit] Rescheduled alarm \(newId) in \(rescheduleDelay)s for base \(self.baseAlarmId)")
+            print("[ExpoAlarmKit] Rescheduled alarm \(newId) firing at \(fireDate) (\(rescheduleDelay)s) for base \(self.baseAlarmId)")
         } catch {
-            print("[ExpoAlarmKit] Failed to reschedule alarm: \(error)")
+            print("[ExpoAlarmKit] Failed to reschedule alarm: \(error.localizedDescription) | \(error)")
         }
 
         return .result()
@@ -310,15 +337,21 @@ public struct AlarmRescheduleStopIntent: LiveActivityIntent {
         struct Meta: AlarmMetadata {}
 
         let title = config["title"] as? String ?? "Alarm"
-        let soundName = config["soundName"] as? String
-        let tintColorHex = config["tintColor"] as? String
+        let rawSoundName = config["soundName"] as? String
+        let soundName = (rawSoundName?.isEmpty == true) ? nil : rawSoundName
+        let rawTintColor = config["tintColor"] as? String
+        let tintColorHex = (rawTintColor?.isEmpty == true) ? nil : rawTintColor
         let stopLabel = config["stopButtonLabel"] as? String ?? "Stop"
         let snoozeLabel = config["snoozeButtonLabel"] as? String ?? "Snooze"
-        let stopColorHex = config["stopButtonColor"] as? String
-        let snoozeColorHex = config["snoozeButtonColor"] as? String
+        let rawStopColor = config["stopButtonColor"] as? String
+        let stopColorHex = (rawStopColor?.isEmpty == true) ? nil : rawStopColor
+        let rawSnoozeColor = config["snoozeButtonColor"] as? String
+        let snoozeColorHex = (rawSnoozeColor?.isEmpty == true) ? nil : rawSnoozeColor
         let snoozeDuration = config["snoozeDuration"] as? Int ?? (9 * 60)
-        let dismissPayload = config["dismissPayload"] as? String
-        let snoozePayload = config["snoozePayload"] as? String
+        let rawDismissPayload = config["dismissPayload"] as? String
+        let dismissPayload = (rawDismissPayload?.isEmpty == true) ? nil : rawDismissPayload
+        let rawSnoozePayload = config["snoozePayload"] as? String
+        let snoozePayload = (rawSnoozePayload?.isEmpty == true) ? nil : rawSnoozePayload
         let launchAppOnSnooze = config["launchAppOnSnooze"] as? Bool ?? false
 
         let stopColor = stopColorHex != nil ? colorFromHex(stopColorHex!) : Color.white
@@ -450,7 +483,7 @@ public class ExpoAlarmKitModule: Module {
         
         // MARK: - Configure App Group
         Function("configure") { (appGroupIdentifier: String) -> Bool in
-            ExpoAlarmKitStorage.appGroupIdentifier = appGroupIdentifier
+            ExpoAlarmKitStorage.persistAppGroupIdentifier(appGroupIdentifier)
             // Verify the app group is accessible
             if ExpoAlarmKitStorage.sharedDefaults != nil {
                 print("[ExpoAlarmKit] Configured with App Group: \(appGroupIdentifier)")
